@@ -1,6 +1,7 @@
 import time
 import uuid
 import copy
+import logging
 from typing import Dict, List, Optional, Any
 from app.models.schemas import (
     UserRole, IncidentType, IncidentSeverity, IncidentUrgency,
@@ -8,6 +9,8 @@ from app.models.schemas import (
     Incident, ResponsePlan, Assignment, Notification, AuditLog
 )
 from app.core.security import get_password_hash
+
+logger = logging.getLogger("CrisisCommand.Database")
 
 # Coordinate baseline for metropolitan emergency grid (e.g. Downtown Metro Grid)
 BASE_LAT = 12.9716
@@ -22,7 +25,96 @@ class Database:
         self.assignments: Dict[str, Assignment] = {}
         self.notifications: List[Notification] = []
         self.audit_logs: List[AuditLog] = []
+        self._firestore_db = None
+        self.init_firestore()
         self.seed_demo_data()
+
+    def init_firestore(self):
+        try:
+            from app.services.firebase_service import get_firestore_client
+            self._firestore_db = get_firestore_client()
+            if self._firestore_db:
+                logger.info("Firestore client active for persistent database operations.")
+                self.sync_from_firestore()
+        except Exception as e:
+            logger.info(f"Operating in local memory mode (Firestore not initialized: {e})")
+
+    def sync_from_firestore(self):
+        if not self._firestore_db:
+            return
+        try:
+            docs = self._firestore_db.collection("users").stream()
+            for doc in docs:
+                u = doc.to_dict()
+                email = (u.get("email") or doc.id).strip().lower()
+                if email:
+                    self.users[email] = u
+        except Exception as e:
+            logger.warning(f"Firestore users sync skipped: {e}")
+
+    def save_user(self, user_data: Dict[str, Any]):
+        email = user_data["email"].strip().lower()
+        self.users[email] = user_data
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("users").document(email).set(user_data, merge=True)
+            except Exception as e:
+                logger.warning(f"Failed to persist user {email} to Firestore: {e}")
+
+    def get_user(self, email: str) -> Optional[Dict[str, Any]]:
+        email_clean = email.strip().lower()
+        if email_clean in self.users:
+            return self.users[email_clean]
+        if self._firestore_db:
+            try:
+                doc = self._firestore_db.collection("users").document(email_clean).get()
+                if doc.exists:
+                    data = doc.to_dict()
+                    self.users[email_clean] = data
+                    return data
+            except Exception as e:
+                logger.warning(f"Failed to query Firestore for user {email_clean}: {e}")
+        return None
+
+    def save_incident(self, incident: Incident):
+        self.incidents[incident.id] = incident
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("incidents").document(incident.id).set(incident.dict(), merge=True)
+            except Exception as e:
+                logger.warning(f"Failed to persist incident {incident.id} to Firestore: {e}")
+
+    def save_resource(self, resource: Resource):
+        self.resources[resource.id] = resource
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("resources").document(resource.id).set(resource.dict(), merge=True)
+            except Exception as e:
+                logger.warning(f"Failed to persist resource {resource.id} to Firestore: {e}")
+
+    def save_assignment(self, assignment: Assignment):
+        self.assignments[assignment.id] = assignment
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("assignments").document(assignment.id).set(assignment.dict(), merge=True)
+            except Exception as e:
+                logger.warning(f"Failed to persist assignment {assignment.id} to Firestore: {e}")
+
+    def add_notification(self, notification: Notification):
+        self.notifications.append(notification)
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("notifications").document(notification.id).set(notification.dict(), merge=True)
+            except Exception as e:
+                logger.warning(f"Failed to persist notification {notification.id} to Firestore: {e}")
+
+    def add_audit_log(self, audit_log: AuditLog):
+        self.audit_logs.append(audit_log)
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("audit_logs").document(audit_log.id).set(audit_log.dict(), merge=True)
+            except Exception as e:
+                logger.warning(f"Failed to persist audit log {audit_log.id} to Firestore: {e}")
 
     def reset(self):
         self.users.clear()
@@ -35,9 +127,6 @@ class Database:
         self.seed_demo_data()
 
     def seed_demo_data(self):
-        from app.core.config import settings
-        if not settings.DEMO_MODE:
-            return
 
         # 1. Seed Mandatory Development/Demo Test Accounts
         demo_accounts = [
@@ -154,7 +243,13 @@ class Database:
             }
         ]
         for u in demo_accounts:
-            self.users[u["email"]] = u
+            email_key = u["email"].strip().lower()
+            if email_key not in self.users:
+                self.users[email_key] = copy.deepcopy(u)
+            else:
+                for k, v in u.items():
+                    if k not in self.users[email_key] or self.users[email_key][k] is None:
+                        self.users[email_key][k] = copy.deepcopy(v)
 
         # 2. Seed 5 Fire Teams
         fire_teams_data = [
@@ -165,21 +260,22 @@ class Database:
             {"id": "RES-FIRE-05", "name": "Suburban Fire Station 05", "lat": BASE_LAT + 0.038, "lng": BASE_LNG + 0.035, "address": "12 East Outer Loop", "equipment": ["Rapid Attack Vehicle", "Ladder Unit"]},
         ]
         for ft in fire_teams_data:
-            self.resources[ft["id"]] = Resource(
-                id=ft["id"],
-                name=ft["name"],
-                type=ResourceType.FIRE_TEAM,
-                status=ResourceStatus.AVAILABLE,
-                latitude=ft["lat"],
-                longitude=ft["lng"],
-                address=ft["address"],
-                contact="+1-555-FIRE-" + ft["id"][-2:],
-                capacity=4,
-                available_units=4,
-                specialization=["structural_fire", "hazmat", "rescue"],
-                equipment=ft["equipment"],
-                updated_at="2026-09-30T10:00:00Z"
-            )
+            if ft["id"] not in self.resources:
+                self.resources[ft["id"]] = Resource(
+                    id=ft["id"],
+                    name=ft["name"],
+                    type=ResourceType.FIRE_TEAM,
+                    status=ResourceStatus.AVAILABLE,
+                    latitude=ft["lat"],
+                    longitude=ft["lng"],
+                    address=ft["address"],
+                    contact="+1-555-FIRE-" + ft["id"][-2:],
+                    capacity=4,
+                    available_units=4,
+                    specialization=["structural_fire", "hazmat", "rescue"],
+                    equipment=ft["equipment"],
+                    updated_at="2026-09-30T10:00:00Z"
+                )
 
         # 3. Seed 5 Ambulances
         ambulances_data = [
@@ -190,21 +286,22 @@ class Database:
             {"id": "RES-AMB-05", "name": "Ambulance Unit 05 (Mobile ICU)", "lat": BASE_LAT + 0.015, "lng": BASE_LNG - 0.030, "address": "Expressway Point 4"},
         ]
         for amb in ambulances_data:
-            self.resources[amb["id"]] = Resource(
-                id=amb["id"],
-                name=amb["name"],
-                type=ResourceType.AMBULANCE,
-                status=ResourceStatus.AVAILABLE,
-                latitude=amb["lat"],
-                longitude=amb["lng"],
-                address=amb["address"],
-                contact="+1-555-AMB-" + amb["id"][-2:],
-                capacity=2,
-                available_units=2,
-                specialization=["ALS", "trauma_care", "pediatric_life_support"],
-                equipment=["Defibrillator", "Oxygen Unit", "Spine Board", "Telemetry"],
-                updated_at="2026-09-30T10:00:00Z"
-            )
+            if amb["id"] not in self.resources:
+                self.resources[amb["id"]] = Resource(
+                    id=amb["id"],
+                    name=amb["name"],
+                    type=ResourceType.AMBULANCE,
+                    status=ResourceStatus.AVAILABLE,
+                    latitude=amb["lat"],
+                    longitude=amb["lng"],
+                    address=amb["address"],
+                    contact="+1-555-AMB-" + amb["id"][-2:],
+                    capacity=2,
+                    available_units=2,
+                    specialization=["ALS", "trauma_care", "pediatric_life_support"],
+                    equipment=["Defibrillator", "Oxygen Unit", "Spine Board", "Telemetry"],
+                    updated_at="2026-09-30T10:00:00Z"
+                )
 
         # 4. Seed 5 Hospitals
         hospitals_data = [
@@ -215,21 +312,22 @@ class Database:
             {"id": "RES-HOSP-05", "name": "Northpoint Community Hospital", "lat": BASE_LAT + 0.032, "lng": BASE_LNG + 0.028, "address": "90 North Crest Way", "beds": 5, "capacity": 10, "spec": ["Urgent Care", "General Surgery"]},
         ]
         for hosp in hospitals_data:
-            self.resources[hosp["id"]] = Resource(
-                id=hosp["id"],
-                name=hosp["name"],
-                type=ResourceType.HOSPITAL,
-                status=ResourceStatus.AVAILABLE,
-                latitude=hosp["lat"],
-                longitude=hosp["lng"],
-                address=hosp["address"],
-                contact="+1-555-HOSP-" + hosp["id"][-2:],
-                capacity=hosp["capacity"],
-                available_units=hosp["beds"],
-                specialization=hosp["spec"],
-                equipment=["CT Scanner", "Operating Theaters", "ICU Beds", "Blood Bank"],
-                updated_at="2026-09-30T10:00:00Z"
-            )
+            if hosp["id"] not in self.resources:
+                self.resources[hosp["id"]] = Resource(
+                    id=hosp["id"],
+                    name=hosp["name"],
+                    type=ResourceType.HOSPITAL,
+                    status=ResourceStatus.AVAILABLE,
+                    latitude=hosp["lat"],
+                    longitude=hosp["lng"],
+                    address=hosp["address"],
+                    contact="+1-555-HOSP-" + hosp["id"][-2:],
+                    capacity=hosp["capacity"],
+                    available_units=hosp["beds"],
+                    specialization=hosp["spec"],
+                    equipment=["CT Scanner", "Operating Theaters", "ICU Beds", "Blood Bank"],
+                    updated_at="2026-09-30T10:00:00Z"
+                )
 
         # 5. Seed 10 Realistic Initial Incidents (Matching requirements: Fire #001 HIGH, Accident #002 MEDIUM, Fire #003 LOW, etc.)
         initial_incidents = [
@@ -396,37 +494,40 @@ class Database:
         ]
 
         for inc in initial_incidents:
-            # Associate some incidents with usr_citizen_demo so demo citizen has active and history records
-            reporter = "usr_citizen_demo" if inc["id"] in ["INC-001", "INC-004", "INC-005", "INC-010"] else "usr_citizen_1"
-            incident_obj = Incident(
-                id=inc["id"],
-                incident_type=inc["incident_type"],
-                title=inc["title"],
-                description=inc["description"],
-                severity=inc["severity"],
-                urgency=inc["urgency"],
-                status=inc["status"],
-                people_affected=inc["people_affected"],
-                latitude=inc["lat"],
-                longitude=inc["lng"],
-                address=inc["address"],
-                reported_by_id=reporter,
-                source_type=inc["source_type"],
-                source_confidence=inc["source_confidence"],
-                current_plan_version=inc["plan_version"],
-                created_at="2026-09-30T10:30:00Z",
-                updated_at="2026-09-30T10:35:00Z"
-            )
-            # Add initial timeline
-            incident_obj.timeline = [
-                {"timestamp": "2026-09-30T10:30:00Z", "event": "Incident reported by source", "details": f"Type: {inc['incident_type'].value}, Reported affected: {inc['people_affected']}"},
-                {"timestamp": "2026-09-30T10:30:30Z", "event": "AI Assessment completed", "details": f"Severity: {inc['severity'].value}, Urgency: {inc['urgency'].value}"},
-                {"timestamp": "2026-09-30T10:31:00Z", "event": "Response Plan V1 generated & automatically activated", "details": "Autonomous execution engine assigned optimal nearby units"}
-            ]
-            self.incidents[inc["id"]] = incident_obj
+            if inc["id"] not in self.incidents:
+                # Associate some incidents with usr_citizen_demo so demo citizen has active and history records
+                reporter = "usr_citizen_demo" if inc["id"] in ["INC-001", "INC-004", "INC-005", "INC-010"] else "usr_citizen_1"
+                incident_obj = Incident(
+                    id=inc["id"],
+                    incident_type=inc["incident_type"],
+                    title=inc["title"],
+                    description=inc["description"],
+                    severity=inc["severity"],
+                    urgency=inc["urgency"],
+                    status=inc["status"],
+                    people_affected=inc["people_affected"],
+                    latitude=inc["lat"],
+                    longitude=inc["lng"],
+                    address=inc["address"],
+                    reported_by_id=reporter,
+                    source_type=inc["source_type"],
+                    source_confidence=inc["source_confidence"],
+                    current_plan_version=inc["plan_version"],
+                    created_at="2026-09-30T10:30:00Z",
+                    updated_at="2026-09-30T10:35:00Z"
+                )
+                # Add initial timeline
+                incident_obj.timeline = [
+                    {"timestamp": "2026-09-30T10:30:00Z", "event": "Incident reported by source", "details": f"Type: {inc['incident_type'].value}, Reported affected: {inc['people_affected']}"},
+                    {"timestamp": "2026-09-30T10:30:30Z", "event": "AI Assessment completed", "details": f"Severity: {inc['severity'].value}, Urgency: {inc['urgency'].value}"},
+                    {"timestamp": "2026-09-30T10:31:00Z", "event": "Response Plan V1 generated & automatically activated", "details": "Autonomous execution engine assigned optimal nearby units"}
+                ]
+                self.incidents[inc["id"]] = incident_obj
 
         # Assign initial active assignments for INC-001 and INC-002
-        # INC-001 gets Fire Station 01 + Ambulance 01 + Hospital 01
+        if "ASG-001" in self.assignments:
+            return
+
         plan1_id = "PLAN-" + str(uuid.uuid4())[:8]
         # Compute distances/ETAs from actual seeded coordinates (haversine from resource → incident)
         import math as _math

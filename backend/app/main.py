@@ -29,13 +29,34 @@ app = FastAPI(
 )
 
 # CORS configuration
+allowed_origins = [
+    "https://cirsis-command-multi-agent-environment-1.onrender.com",
+    "https://cirsis-command-multi-agent-environment.onrender.com",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+]
+if settings.FRONTEND_URL and settings.FRONTEND_URL.rstrip("/") not in allowed_origins:
+    allowed_origins.append(settings.FRONTEND_URL.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("Initializing Crisis Command backend and ensuring demo accounts...")
+    from app.core.database import db
+    db.init_firestore()
+    db.seed_demo_data()
+    logger.info(f"Crisis Command initialized with {len(db.users)} users, {len(db.resources)} resources, {len(db.incidents)} incidents.")
 
 # Include Routers
 app.include_router(auth_router)

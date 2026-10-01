@@ -4,7 +4,7 @@ import {
   Lock, Mail, AlertCircle, ArrowRight, Sparkles,
   Shield, Flame, Hospital, User, ArrowLeft, Eye, EyeOff
 } from 'lucide-react';
-import { api } from '../services/api';
+import { api, normalizeApiError } from '../services/api';
 import { useCrisisStore } from '../store/useCrisisStore';
 
 interface LoginPageProps {
@@ -144,13 +144,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ navigate }) => {
         navigate('/citizen/dashboard');
       }
     } catch (err: any) {
-      const msg = err.message || 'Unable to connect to Crisis Command. Please try again.';
-      if (msg.includes('401') || msg.toLowerCase().includes('invalid email')) {
+      const msg = normalizeApiError(err);
+      if (msg.toLowerCase().includes('invalid email or password') || msg.includes('401')) {
         setError('Invalid email or password.');
-      } else if (msg.toLowerCase().includes('not found')) {
+      } else if (msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no registration')) {
         setError('Account not found. Please create an account first.');
       } else if (msg.toLowerCase().includes('verify your email')) {
         setError('Please verify your email before signing in.');
+      } else if (msg.toLowerCase().includes('role mismatch')) {
+        setError(msg);
       } else {
         setError(msg);
       }
@@ -314,7 +316,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ navigate }) => {
                 className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-start space-x-2.5 font-mono shadow-[0_0_15px_rgba(244,63,94,0.15)]"
               >
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-                <span className="leading-relaxed">{error}</span>
+                <span className="leading-relaxed">{typeof error === 'string' ? error : normalizeApiError(error)}</span>
               </motion.div>
             )}
           </AnimatePresence>

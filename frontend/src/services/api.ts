@@ -1,4 +1,128 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+const getApiBase = (): string => {
+  const envUrl = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_URL;
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    return envUrl.trim().replace(/\/+$/, '');
+  }
+  // When running on Render or deployed domain, default to production backend URL rather than localhost
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host.includes('onrender.com') || (host !== 'localhost' && host !== '127.0.0.1')) {
+      return 'https://cirsis-command-multi-agent-environment.onrender.com';
+    }
+  }
+  return 'http://localhost:8000';
+};
+
+const API_BASE = getApiBase();
+
+/**
+ * Normalizes any API or network error into a clean, human-readable string.
+ * Strictly guarantees that '[object Object]' is never returned.
+ */
+export function normalizeApiError(err: any): string {
+  if (!err) {
+    return 'An unexpected error occurred. Please try again.';
+  }
+
+  // 1. If already a string
+  if (typeof err === 'string') {
+    const trimmed = err.trim();
+    if (!trimmed || trimmed === '[object Object]') {
+      return 'An unexpected error occurred. Please try again.';
+    }
+    // Handle stringified JSON errors
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return normalizeApiError(parsed);
+      } catch {
+        // Not valid JSON, continue with trimmed string
+      }
+    }
+    return trimmed;
+  }
+
+  // 2. If it's a TypeError from fetch (network/CORS failure)
+  if (err instanceof TypeError || (err.name === 'TypeError' && err.message)) {
+    if (typeof err.message === 'string' && err.message.toLowerCase().includes('fetch')) {
+      return 'Unable to reach Crisis Command servers. Please check your internet connection or try again shortly.';
+    }
+  }
+
+  // 3. Nested response/data wrappers (e.g., Axios or custom response bodies)
+  if (err.response && err.response.data) {
+    return normalizeApiError(err.response.data);
+  }
+  if (err.data) {
+    return normalizeApiError(err.data);
+  }
+
+  // 4. FastAPI standard 'detail' field
+  if (err.detail !== undefined && err.detail !== null) {
+    if (typeof err.detail === 'string') {
+      return normalizeApiError(err.detail);
+    }
+    if (Array.isArray(err.detail)) {
+      const messages = err.detail
+        .map((item: any) => {
+          if (!item) return '';
+          if (typeof item === 'string') return item;
+          const field = Array.isArray(item.loc) && item.loc.length > 0 ? String(item.loc[item.loc.length - 1]) : '';
+          const msg = item.msg || item.message || '';
+          if (field && field !== 'body') {
+            return `${field}: ${msg}`;
+          }
+          return msg;
+        })
+        .filter(Boolean);
+      if (messages.length > 0) {
+        return messages.join('. ');
+      }
+      return 'Validation error. Please verify the provided details.';
+    }
+    if (typeof err.detail === 'object') {
+      if (typeof err.detail.message === 'string' && err.detail.message.trim()) {
+        return err.detail.message.trim();
+      }
+      if (typeof err.detail.detail === 'string' && err.detail.detail.trim()) {
+        return err.detail.detail.trim();
+      }
+      if (typeof err.detail.error === 'string' && err.detail.error.trim()) {
+        return err.detail.error.trim();
+      }
+    }
+  }
+
+  // 5. Standard 'message' field
+  if (err.message) {
+    if (typeof err.message === 'string') {
+      const msg = err.message.trim();
+      if (msg && msg !== '[object Object]') {
+        return normalizeApiError(msg);
+      }
+    } else {
+      return normalizeApiError(err.message);
+    }
+  }
+
+  // 6. Generic 'error' field
+  if (err.error && typeof err.error === 'string') {
+    const errorStr = err.error.trim();
+    if (errorStr && errorStr !== '[object Object]') {
+      return errorStr;
+    }
+  }
+
+  // 7. Status Text
+  if (err.statusText && typeof err.statusText === 'string') {
+    const st = err.statusText.trim();
+    if (st && st !== '[object Object]') {
+      return st;
+    }
+  }
+
+  return 'An unexpected error occurred. Please try again.';
+}
 
 class ApiService {
   private getHeaders(): HeadersInit {
@@ -13,23 +137,35 @@ class ApiService {
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers: {
-        ...this.getHeaders(),
-        ...(options.headers || {}),
-      },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        headers: {
+          ...this.getHeaders(),
+          ...(options.headers || {}),
+        },
+      });
+    } catch (networkErr: any) {
+      throw new Error(normalizeApiError(networkErr));
+    }
 
     if (!res.ok) {
-      let errorMsg = 'An error occurred';
+      let rawError: any = null;
       try {
-        const errorData = await res.json();
-        errorMsg = errorData.detail || errorData.message || res.statusText;
+        rawError = await res.json();
       } catch {
-        errorMsg = res.statusText;
+        try {
+          rawError = await res.text();
+        } catch {
+          rawError = res.statusText || `HTTP Error ${res.status}`;
+        }
       }
-      throw new Error(errorMsg);
+      const humanMessage = normalizeApiError(rawError || res.statusText);
+      const err = new Error(humanMessage);
+      (err as any).status = res.status;
+      (err as any).data = rawError;
+      throw err;
     }
 
     return res.json();

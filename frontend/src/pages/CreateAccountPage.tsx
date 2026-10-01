@@ -5,7 +5,7 @@ import {
   ArrowLeft, Eye, EyeOff, Shield, Flame, Hospital, Navigation,
   Phone, MapPin, Activity, Stethoscope, Truck, KeyRound
 } from 'lucide-react';
-import { api } from '../services/api';
+import { api, normalizeApiError } from '../services/api';
 import { useCrisisStore } from '../store/useCrisisStore';
 
 interface CreateAccountPageProps {
@@ -164,7 +164,7 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
       setAttempts(0);
       setTimeout(() => otpInputRefs.current[0]?.focus(), 100);
     } catch (err: any) {
-      setError(err.message || 'Registration failed.');
+      setError(normalizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -221,7 +221,7 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
       }
     } catch (err: any) {
       setAttempts((a) => a + 1);
-      setError(err.message || 'Invalid or expired verification OTP.');
+      setError(normalizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -242,8 +242,8 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
       setCountdown(300);
       setOtpDigits(['', '', '', '', '', '']);
       otpInputRefs.current[0]?.focus();
-    } catch {
-      setError('Failed to resend verification OTP.');
+    } catch (err: any) {
+      setError(normalizeApiError(err));
     } finally {
       setLoading(false);
     }

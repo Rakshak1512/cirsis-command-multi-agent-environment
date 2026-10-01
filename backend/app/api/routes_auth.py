@@ -100,12 +100,12 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
     user_data = _pending_registrations.pop(email, None)
     if not user_data:
         # Check if user already exists (e.g. forgot password flow or re-verification)
-        user_data = db.users.get(email)
+        user_data = db.get_user(email)
         if not user_data:
             raise HTTPException(status_code=404, detail="No registration found for this email.")
     else:
         user_data["is_verified"] = True
-        db.users[email] = user_data
+        db.save_user(user_data)
 
         # Dynamically provision emergency asset for Fire Team or Hospital accounts
         meta = user_data.get("metadata") or {}
@@ -176,7 +176,7 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
 @router.post("/login", response_model=TokenResponse)
 def login(req: UserLoginRequest):
     email = req.email.strip().lower()
-    user_data = db.users.get(email)
+    user_data = db.get_user(email)
     if not user_data:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
@@ -256,11 +256,12 @@ def reset_password(req: ResetPasswordRequest):
     if not valid:
         raise HTTPException(status_code=400, detail="Invalid or expired reset OTP.")
 
-    user_data = db.users.get(email)
+    user_data = db.get_user(email)
     if not user_data:
         raise HTTPException(status_code=404, detail="User not found.")
 
     user_data["password_hash"] = get_password_hash(req.new_password)
+    db.save_user(user_data)
     return {"status": "success", "message": "Password reset successfully. You may now log in."}
 
 @router.get("/users")
@@ -284,14 +285,15 @@ def list_users():
 def update_user_status(email: str, status_data: dict):
     """Updates user status or verification state."""
     target_email = email.strip().lower()
-    if target_email not in db.users:
+    user = db.get_user(target_email)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     
-    user = db.users[target_email]
     if "status" in status_data:
         user["status"] = status_data["status"]
     if "is_verified" in status_data:
         user["is_verified"] = bool(status_data["is_verified"])
+    db.save_user(user)
     
     return {
         "status": "success",

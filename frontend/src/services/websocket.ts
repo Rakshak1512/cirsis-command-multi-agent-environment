@@ -69,7 +69,30 @@ class WebSocketClient {
 
   private getWebSocketUrl(): string {
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const backendHost = import.meta.env.VITE_BACKEND_HOST || 'localhost:8000';
+    let backendHost = import.meta.env.VITE_BACKEND_HOST;
+    if (backendHost && typeof backendHost === 'string' && backendHost.trim()) {
+      // Strip any protocol prefixes or trailing paths if provided
+      backendHost = backendHost.trim().replace(/^wss?:\/\//, '').replace(/^https?:\/\//, '').replace(/\/+.*$/, '');
+    } else {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_URL;
+      if (backendUrl && typeof backendUrl === 'string' && backendUrl.trim()) {
+        try {
+          const parsed = new URL(backendUrl);
+          backendHost = parsed.host;
+        } catch {
+          backendHost = backendUrl.replace(/^https?:\/\//, '').replace(/\/+.*$/, '');
+        }
+      }
+    }
+
+    if (!backendHost) {
+      if (typeof window !== 'undefined' && (window.location.hostname.includes('onrender.com') || (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'))) {
+        backendHost = 'cirsis-command-multi-agent-environment.onrender.com';
+      } else {
+        backendHost = 'localhost:8000';
+      }
+    }
+
     const token = localStorage.getItem('crisis_token');
     const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
     return `${wsProto}//${backendHost}/ws/command${tokenParam}`;

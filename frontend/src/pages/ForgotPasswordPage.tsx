@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Mail, Lock, KeyRound, ArrowRight, CheckCircle2, AlertCircle, ArrowLeft } from 'lucide-react';
-import { api } from '../services/api';
+import { api, normalizeApiError } from '../services/api';
 
 interface ForgotPasswordPageProps {
   navigate: (path: string) => void;
@@ -27,7 +27,7 @@ export const ForgotPasswordPage: React.FC<ForgotPasswordPageProps> = ({ navigate
       setSuccessMsg(res.message || 'Password reset OTP dispatched.');
       setStep('RESET');
     } catch (err: any) {
-      setError(err.message || 'Failed to dispatch password reset code.');
+      setError(normalizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -53,7 +53,7 @@ export const ForgotPasswordPage: React.FC<ForgotPasswordPageProps> = ({ navigate
       setSuccessMsg('Password reset successfully! Redirecting to login...');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err: any) {
-      setError(err.message || 'Invalid OTP or failed to reset password.');
+      setError(normalizeApiError(err));
     } finally {
       setLoading(false);
     }
