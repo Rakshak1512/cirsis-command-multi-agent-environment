@@ -3,8 +3,18 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.database import db
 from app.models.schemas import UserRole
+from app.services.smtp_service import get_latest_otp_for_testing
 
 client = TestClient(app)
+
+def _cleanup_test_user(email: str):
+    db.users.pop(email, None)
+    if db._firestore_db:
+        try:
+            db._firestore_db.collection("users").document(email).delete()
+            db._firestore_db.collection("otp_verifications").document(email).delete()
+        except Exception:
+            pass
 
 def test_public_commander_dispatcher_registration_blocked():
     # Attempting to register as COMMANDER publicly should be blocked (400)
@@ -28,6 +38,7 @@ def test_public_commander_dispatcher_registration_blocked():
     assert "internal" in res_disp.json()["detail"].lower()
 
 def test_admin_registration_code_protection():
+    _cleanup_test_user("super_admin_test@crisiscommand.demo")
     # Invalid admin registration code should fail (403)
     res_bad = client.post("/auth/register", json={
         "full_name": "Fake Admin",
@@ -52,10 +63,12 @@ def test_admin_registration_code_protection():
     assert res_good.status_code == 200
     data = res_good.json()
     assert data["role"] == "ADMIN"
-    assert "otp" in data
+    
+    # Retrieve securely dispatched OTP for test verification
+    otp = get_latest_otp_for_testing("super_admin_test@crisiscommand.demo")
+    assert otp is not None
 
     # Verify OTP
-    otp = data["otp"]
     res_verify = client.post("/auth/verify-otp", json={
         "email": "super_admin_test@crisiscommand.demo",
         "otp": otp
@@ -64,6 +77,7 @@ def test_admin_registration_code_protection():
     assert res_verify.json()["user"]["role"] == "ADMIN"
 
 def test_citizen_registration_and_otp():
+    _cleanup_test_user("jane_citizen_test@crisiscommand.demo")
     res = client.post("/auth/register", json={
         "full_name": "Jane Citizen",
         "email": "jane_citizen_test@crisiscommand.demo",
@@ -71,7 +85,8 @@ def test_citizen_registration_and_otp():
         "role": "CITIZEN"
     })
     assert res.status_code == 200
-    otp = res.json()["otp"]
+    otp = get_latest_otp_for_testing("jane_citizen_test@crisiscommand.demo")
+    assert otp is not None
 
     res_verify = client.post("/auth/verify-otp", json={
         "email": "jane_citizen_test@crisiscommand.demo",
@@ -81,6 +96,7 @@ def test_citizen_registration_and_otp():
     assert res_verify.json()["user"]["role"] == "CITIZEN"
 
 def test_fire_team_registration_and_resource_provisioning():
+    _cleanup_test_user("fire_station_44@crisiscommand.demo")
     res = client.post("/auth/register", json={
         "full_name": "Capt. James Miller",
         "team_leader_name": "Capt. James Miller",
@@ -96,7 +112,8 @@ def test_fire_team_registration_and_resource_provisioning():
         "equipment": ["Aerial Ladder", "High-Pressure Pumper", "Thermal Camera"]
     })
     assert res.status_code == 200
-    otp = res.json()["otp"]
+    otp = get_latest_otp_for_testing("fire_station_44@crisiscommand.demo")
+    assert otp is not None
 
     res_verify = client.post("/auth/verify-otp", json={
         "email": "fire_station_44@crisiscommand.demo",
@@ -117,6 +134,7 @@ def test_fire_team_registration_and_resource_provisioning():
     assert "Aerial Ladder" in resource.equipment
 
 def test_hospital_registration_and_resource_provisioning():
+    _cleanup_test_user("memorial_trauma@crisiscommand.demo")
     res = client.post("/auth/register", json={
         "full_name": "Dr. Sarah Chen",
         "hospital_name": "Memorial Trauma & Critical Care Center",
@@ -134,7 +152,8 @@ def test_hospital_registration_and_resource_provisioning():
         "specializations": ["Burn Unit", "Neuro-trauma", "Pediatric Emergency"]
     })
     assert res.status_code == 200
-    otp = res.json()["otp"]
+    otp = get_latest_otp_for_testing("memorial_trauma@crisiscommand.demo")
+    assert otp is not None
 
     res_verify = client.post("/auth/verify-otp", json={
         "email": "memorial_trauma@crisiscommand.demo",

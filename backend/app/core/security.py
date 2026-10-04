@@ -83,45 +83,107 @@ def get_required_user(user: Optional[Dict[str, Any]] = Depends(get_current_user)
     return user
 
 def generate_otp(email: str) -> str:
-    """Generates a secure 6-digit OTP and stores its hash with expiry (5 mins) and attempt counter."""
+    """Generates a secure 6-digit OTP and stores its SHA-256 hash with expiry (5 mins) and attempt counter."""
+    clean_email = email.strip().lower()
     now = time.time()
-    existing = _otp_store.get(email.lower())
+
+    # Look up in memory first, then Firestore if available
+    existing = _otp_store.get(clean_email)
+    if not existing:
+        try:
+            from app.core.database import db
+            if db._firestore_db:
+                doc = db._firestore_db.collection("otp_verifications").document(clean_email).get()
+                if doc.exists:
+                    existing = doc.to_dict()
+                    _otp_store[clean_email] = existing
+        except Exception:
+            pass
+
     if existing and now < existing.get("resend_after", 0):
-        # Still in cooldown
-        remaining = int(existing["resend_after"] - now)
+        remaining = max(1, int(existing["resend_after"] - now))
         raise ValueError(f"Please wait {remaining} seconds before requesting a new OTP.")
 
     otp_digits = f"{secrets.randbelow(900000) + 100000}"
     otp_hash = hashlib.sha256(otp_digits.encode()).hexdigest()
 
-    _otp_store[email.lower()] = {
+    entry = {
         "otp_hash": otp_hash,
         "expires_at": now + 300,  # 5 minutes
         "resend_after": now + 60,  # 1 minute cooldown
         "attempts": 0,
         "max_attempts": 5
     }
+    _otp_store[clean_email] = entry
+
+    try:
+        from app.core.database import db
+        if db._firestore_db:
+            db._firestore_db.collection("otp_verifications").document(clean_email).set(entry)
+    except Exception:
+        pass
+
     return otp_digits
 
 def verify_otp(email: str, entered_otp: str) -> bool:
     """Verifies a 6-digit OTP server-side. Enforces max attempts and expiration."""
-    entry = _otp_store.get(email.lower())
+    clean_email = email.strip().lower()
+    entry = _otp_store.get(clean_email)
+
+    if not entry:
+        try:
+            from app.core.database import db
+            if db._firestore_db:
+                doc = db._firestore_db.collection("otp_verifications").document(clean_email).get()
+                if doc.exists:
+                    entry = doc.to_dict()
+                    _otp_store[clean_email] = entry
+        except Exception:
+            pass
+
     if not entry:
         return False
 
     now = time.time()
-    if now > entry["expires_at"]:
-        _otp_store.pop(email.lower(), None)
+    if now > entry.get("expires_at", 0):
+        _otp_store.pop(clean_email, None)
+        try:
+            from app.core.database import db
+            if db._firestore_db:
+                db._firestore_db.collection("otp_verifications").document(clean_email).delete()
+        except Exception:
+            pass
         return False
 
-    if entry["attempts"] >= entry["max_attempts"]:
-        _otp_store.pop(email.lower(), None)
+    if entry.get("attempts", 0) >= entry.get("max_attempts", 5):
+        _otp_store.pop(clean_email, None)
+        try:
+            from app.core.database import db
+            if db._firestore_db:
+                db._firestore_db.collection("otp_verifications").document(clean_email).delete()
+        except Exception:
+            pass
         raise ValueError("Maximum OTP verification attempts exceeded. Please request a new OTP.")
 
-    entry["attempts"] += 1
+    entry["attempts"] = entry.get("attempts", 0) + 1
     entered_hash = hashlib.sha256(entered_otp.strip().encode()).hexdigest()
+
     if entered_hash == entry["otp_hash"]:
-        _otp_store.pop(email.lower(), None)
+        _otp_store.pop(clean_email, None)
+        try:
+            from app.core.database import db
+            if db._firestore_db:
+                db._firestore_db.collection("otp_verifications").document(clean_email).delete()
+        except Exception:
+            pass
         return True
+
+    # Persist updated attempt count
+    try:
+        from app.core.database import db
+        if db._firestore_db:
+            db._firestore_db.collection("otp_verifications").document(clean_email).set(entry)
+    except Exception:
+        pass
 
     return False

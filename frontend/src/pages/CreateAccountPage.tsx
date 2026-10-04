@@ -53,6 +53,7 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
   // OTP State
   const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
   const [error, setError] = useState<string | null>(null);
+  const [infoNotice, setInfoNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [attempts, setAttempts] = useState(0);
 
@@ -162,6 +163,7 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
       setCountdown(300);
       setResendCooldown(60);
       setAttempts(0);
+      setInfoNotice(`6-digit verification code dispatched to ${email.trim().toLowerCase()}`);
       setTimeout(() => otpInputRefs.current[0]?.focus(), 100);
     } catch (err: any) {
       setError(normalizeApiError(err));
@@ -230,6 +232,7 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
   const handleResendOtp = async () => {
     if (resendCooldown > 0) return;
     setError(null);
+    setInfoNotice(null);
     setLoading(true);
     try {
       await api.register({
@@ -241,6 +244,7 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
       setResendCooldown(60);
       setCountdown(300);
       setOtpDigits(['', '', '', '', '', '']);
+      setInfoNotice('A fresh 6-digit verification code has been dispatched to your email.');
       otpInputRefs.current[0]?.focus();
     } catch (err: any) {
       setError(normalizeApiError(err));
@@ -903,6 +907,17 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
               </p>
             </div>
 
+            {infoNotice && (
+              <motion.div
+                initial={{ opacity: 0, y: -5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-start space-x-2.5 font-mono"
+              >
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                <span>{infoNotice}</span>
+              </motion.div>
+            )}
+
             {error && (
               <motion.div
                 initial={{ opacity: 0, y: -5 }}
@@ -923,6 +938,11 @@ export const CreateAccountPage: React.FC<CreateAccountPageProps> = ({ navigate }
                 <p className="text-[11px] text-slate-400 mt-1 font-mono">
                   Code expires in: <span className="text-cyan-300 font-bold">{formatTime(countdown)}</span>
                 </p>
+                {countdown === 0 && (
+                  <p className="text-xs text-amber-400 font-mono mt-2 font-semibold">
+                    Code has expired. Click &ldquo;Resend Code&rdquo; below to request a new OTP.
+                  </p>
+                )}
               </div>
 
               {/* 6 Separate Animated Input Boxes */}

@@ -47,9 +47,15 @@ def register(req: UserRegisterRequest):
 
     try:
         otp = generate_otp(email)
-        send_otp_email(email, otp, purpose=f"Account Verification ({req.role.value})")
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
+
+    sent = send_otp_email(email, otp, purpose=f"Account Verification ({req.role.value})")
+    if not sent:
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to dispatch verification email. Please verify that your email address is correct and that the email service is available."
+        )
 
     # Construct pending registration record (with bcrypt hashed password — NEVER plaintext!)
     pending_record = {
@@ -83,14 +89,13 @@ def register(req: UserRegisterRequest):
     _pending_registrations[email] = pending_record
     db.save_pending_registration(email, pending_record)
 
+    # Note: OTP is NEVER returned in response data for security
     response_data = {
         "status": "success",
         "message": f"Verification 6-digit OTP dispatched to {email}. Please verify to activate your {req.role.value} account.",
         "email": email,
         "role": req.role.value
     }
-    if settings.DEMO_MODE or settings.ENV == "development":
-        response_data["otp"] = otp
     return response_data
 
 @router.post("/verify-otp", response_model=TokenResponse)
@@ -287,11 +292,44 @@ def forgot_password(req: ForgotPasswordRequest):
 
     try:
         otp = generate_otp(email)
-        send_password_reset_email(email, otp)
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
+    sent = send_password_reset_email(email, otp)
+    if not sent:
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to dispatch password reset email. Please verify SMTP service or try again later."
+        )
+
     return {"status": "success", "message": f"Password reset OTP sent to {email}."}
+
+@router.get("/diagnostics")
+def auth_diagnostics(x_admin_seed_key: Optional[str] = Header(None, alias="X-Admin-Seed-Key")):
+    """Protected diagnostic endpoint to verify live Firestore and SMTP provider connectivity."""
+    expected_secret = os.getenv("ADMIN_SEED_SECRET", getattr(settings, "ADMIN_SEED_SECRET", "CRISIS-COMMAND-ROOT-SEED-2026"))
+    if not x_admin_seed_key or x_admin_seed_key.strip() != expected_secret.strip():
+        raise HTTPException(status_code=403, detail="Unauthorized administrative action.")
+
+    from app.services.smtp_service import verify_smtp_connection
+    from app.services.firebase_service import is_firestore_available, get_firebase_credentials
+
+    smtp_ok, smtp_msg = verify_smtp_connection()
+    fs_ok = is_firestore_available()
+    creds = get_firebase_credentials()
+
+    return {
+        "status": "healthy" if (smtp_ok and fs_ok) else "degraded",
+        "firestore": {
+            "connected": fs_ok,
+            "project_id": creds.get("project_id") if creds else None,
+            "users_in_cache": len(db.users)
+        },
+        "smtp": {
+            "connected": smtp_ok,
+            "detail": smtp_msg
+        }
+    }
 
 @router.post("/reset-password")
 def reset_password(req: ResetPasswordRequest):

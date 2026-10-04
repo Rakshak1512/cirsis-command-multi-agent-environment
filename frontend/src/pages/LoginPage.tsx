@@ -70,7 +70,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ navigate }) => {
 
   const { setUser } = useCrisisStore();
 
-  const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true' || import.meta.env.DEV;
+  const isDemoMode = import.meta.env.VITE_DEMO_MODE !== 'false';
 
   // Section 16: ONLY FOUR DEMO ACCOUNTS (Citizen, Fire Team, Hospital, Admin)
   const demoAccounts = [
@@ -416,9 +416,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ navigate }) => {
             <div className="flex items-center justify-between text-xs font-mono font-bold text-cyan-300 uppercase tracking-wider">
               <span className="flex items-center space-x-2">
                 <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span>DEMO ACCOUNTS</span>
+                <span>DEMO CREDENTIALS & QUICK ACCESS</span>
               </span>
-              <span className="text-[10px] text-slate-500 lowercase">click to auto-fill & verify</span>
+              <span className="text-[10px] text-slate-400 font-mono">1-click auto-fill & login</span>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -446,6 +446,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ navigate }) => {
                   </button>
                 );
               })}
+            </div>
+
+            <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
+              <span>Pre-seeded Passwords:</span>
+              <span className="text-cyan-300 font-bold">RoleName@123 (e.g. Citizen@123)</span>
             </div>
           </div>
         )}

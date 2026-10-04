@@ -123,11 +123,10 @@ def test_registration_and_firestore_write():
     reg_data = reg_resp.json()
     assert reg_data["status"] == "success"
 
-    # Get OTP from response or cache
-    otp = reg_data.get("otp")
-    if not otp:
-        from app.core.security import generate_otp
-        otp = generate_otp(test_email)
+    # Get OTP from dispatched email
+    from app.services.smtp_service import get_latest_otp_for_testing
+    otp = get_latest_otp_for_testing(test_email)
+    assert otp is not None
 
     # Verify OTP
     verify_resp = client.post("/auth/verify-otp", json={
