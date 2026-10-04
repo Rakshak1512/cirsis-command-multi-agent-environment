@@ -16,14 +16,29 @@
 
 import { api } from './api';
 
-export type LocationQualityState = 'SEARCHING' | 'APPROXIMATE' | 'ACCURATE' | 'ERROR';
+export type LocationQualityState = 'PINPOINT' | 'ACCURATE' | 'APPROXIMATE' | 'SEARCHING' | 'ERROR';
 export type PermissionState = 'granted' | 'prompt' | 'denied';
+
+export function getPrecisionPercent(accuracy: number | null): number {
+  if (accuracy === null || accuracy <= 0) return 0;
+  if (accuracy <= 10) return 100; // <= 10m is 100% precision
+  if (accuracy <= 20) return 95;
+  if (accuracy <= 30) return 90;
+  if (accuracy <= 50) return 85;
+  if (accuracy <= 100) return 75;
+  if (accuracy <= 200) return 60;
+  if (accuracy <= 500) return 40;
+  return Math.max(5, Math.round((1000 / accuracy) * 20));
+}
 
 export interface LocationState {
   latitude: number | null;
   longitude: number | null;
   accuracy: number | null; // raw browser-reported horizontal accuracy in meters
   bestAccuracy: number | null;
+  precisionPercent: number; // 0 to 100%
+  heading: number | null;
+  speed: number | null;
   timestamp: number | null; // epoch ms
   permission: PermissionState;
   qualityState: LocationQualityState;
@@ -46,6 +61,9 @@ class LocationService {
     longitude: null,
     accuracy: null,
     bestAccuracy: null,
+    precisionPercent: 0,
+    heading: null,
+    speed: null,
     timestamp: null,
     permission: 'prompt',
     qualityState: 'SEARCHING',
@@ -229,36 +247,44 @@ class LocationService {
       };
 
       const handlePosition = async (position: GeolocationPosition) => {
-        const { latitude, longitude, accuracy } = position.coords;
+        const { latitude, longitude, accuracy, heading, speed } = position.coords;
         const posTimestamp = position.timestamp || Date.now();
         const count = this.state.sampleCount + 1;
+        const precisionPercent = getPrecisionPercent(accuracy);
 
-        console.log(`[LOCATION UPDATE]\nlatitude: ${latitude}\nlongitude: ${longitude}\naccuracy: ${accuracy}m\ntimestamp: ${new Date(posTimestamp).toISOString()}`);
+        console.log(`[LOCATION UPDATE]\nlatitude: ${latitude}\nlongitude: ${longitude}\naccuracy: ${accuracy}m (${precisionPercent}%)\ntimestamp: ${new Date(posTimestamp).toISOString()}`);
 
-        // Section 3: Maintain best position
-        let shouldUpdate = false;
-        if (!this.bestPosition) {
+        const prevLat = this.state.latitude;
+        const prevLng = this.state.longitude;
+        const distMoved = (prevLat !== null && prevLng !== null) ? this.calculateMeters(prevLat, prevLng, latitude, longitude) : 0;
+
+        // Maintain best hardware fix seen
+        if (!this.bestPosition || accuracy < this.bestPosition.coords.accuracy) {
           this.bestPosition = position;
-          shouldUpdate = true;
-        } else {
-          const currentBestAcc = this.bestPosition.coords.accuracy;
-          if (accuracy < currentBestAcc) {
-            this.bestPosition = position;
-            shouldUpdate = true;
-          } else {
-            // Check if device moved significantly (> 25 meters)
-            const prevLat = this.bestPosition.coords.latitude;
-            const prevLng = this.bestPosition.coords.longitude;
-            if (this.calculateMeters(prevLat, prevLng, latitude, longitude) > 25) {
-              this.bestPosition = position;
-              shouldUpdate = true;
-            }
-          }
         }
 
-        // Section 4 Quality States
+        // Live Tracking Decision:
+        // 1. Initial coordinates lock
+        // 2. Accuracy improved over current state
+        // 3. User moved >= 3m (sensitive real-time tracking)
+        // 4. Periodic refresh every 3s if accuracy is reasonable
+        let shouldUpdate = false;
+        if (prevLat === null || prevLng === null) {
+          shouldUpdate = true;
+        } else if (accuracy < (this.state.accuracy ?? Infinity)) {
+          shouldUpdate = true;
+        } else if (distMoved >= 3 && accuracy <= 120) {
+          shouldUpdate = true;
+        } else if (Date.now() - (this.state.lastUpdated || 0) > 3000 && accuracy <= 80) {
+          shouldUpdate = true;
+        }
+
+        // Quality States with strict 10m pinpoint lock (100% precision)
         let quality: LocationQualityState = 'SEARCHING';
-        if (accuracy <= 50) {
+        if (accuracy <= 10) {
+          quality = 'PINPOINT'; // Exact 10m target met
+          console.log('[LOCATION] Pinpoint 100% accuracy GPS fix acquired (<= 10m)');
+        } else if (accuracy <= 50) {
           quality = 'ACCURATE';
           console.log('[LOCATION] High accuracy position accepted');
         } else if (accuracy <= 150) {
@@ -270,26 +296,31 @@ class LocationService {
         }
 
         if (shouldUpdate) {
-          const bestAcc = this.bestPosition.coords.accuracy;
+          const bestAcc = this.bestPosition ? this.bestPosition.coords.accuracy : accuracy;
 
           this.setState({
             latitude,
             longitude,
             accuracy: Math.round(accuracy * 10) / 10,
             bestAccuracy: Math.round(bestAcc * 10) / 10,
+            precisionPercent,
+            heading: heading ?? null,
+            speed: speed ?? null,
             timestamp: posTimestamp,
             permission: 'granted',
             qualityState: quality,
             isWatching: true,
             errorMessage: null,
-            diagnosticTip: quality === 'SEARCHING'
+            diagnosticTip: quality === 'PINPOINT'
+              ? 'Target 10m precision locked (100% GPS Accuracy).'
+              : quality === 'SEARCHING'
               ? `Current fix accuracy is ±${Math.round(accuracy)}m. Watching for satellites...`
               : null,
             lastUpdated: Date.now(),
             sampleCount: count,
           });
 
-          // Section 8: Reverse geocode real coordinates (throttled & cached)
+          // Reverse geocode real coordinates (throttled & cached)
           this.resolveReverseGeocode(latitude, longitude, false);
 
           if (!resolved) {

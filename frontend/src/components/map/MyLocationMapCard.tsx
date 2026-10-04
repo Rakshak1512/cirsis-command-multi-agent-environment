@@ -49,6 +49,9 @@ export const MyLocationMapCard: React.FC<{ className?: string }> = ({ className 
     latitude,
     longitude,
     accuracy,
+    precisionPercent,
+    speed,
+    heading,
     qualityState,
     permission,
     address,
@@ -119,29 +122,35 @@ export const MyLocationMapCard: React.FC<{ className?: string }> = ({ className 
               MY CURRENT LOCATION
             </h2>
             <p className="text-[11px] font-mono text-slate-400">
-              Live hardware GPS &bull; OpenStreetMap Street View
+              Live hardware GPS &bull; 10m High-Precision Tracking &bull; OpenStreetMap
             </p>
           </div>
         </div>
 
-        {/* Section 4 Quality State Badges */}
+        {/* Quality State & Accuracy Badges */}
         <div>
+          {qualityState === 'PINPOINT' && (
+            <span className="px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-400/80 flex items-center space-x-1.5 shadow-[0_0_25px_rgba(16,185,129,0.4)]">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+              <span>100% PINPOINT GPS (±{accuracy ? Math.round(accuracy) : 0}m)</span>
+            </span>
+          )}
           {qualityState === 'ACCURATE' && (
             <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center space-x-1.5 shadow-glow-emerald">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>ACCURATE GPS (±{accuracy ? Math.round(accuracy) : 0}m)</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span>HIGH ACCURACY GPS (±{accuracy ? Math.round(accuracy) : 0}m &bull; {precisionPercent}%)</span>
             </span>
           )}
           {qualityState === 'APPROXIMATE' && (
             <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40 flex items-center space-x-1.5">
               <span className="w-2 h-2 rounded-full bg-sky-400" />
-              <span>APPROXIMATE LOCATION (±{accuracy ? Math.round(accuracy) : 0}m)</span>
+              <span>APPROXIMATE (±{accuracy ? Math.round(accuracy) : 0}m &bull; {precisionPercent}%)</span>
             </span>
           )}
           {qualityState === 'SEARCHING' && (
             <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1.5">
               <Compass className="w-3.5 h-3.5 text-amber-400 animate-spin" />
-              <span>IMPROVING ACCURACY... {accuracy ? `(±${Math.round(accuracy)}m)` : ''}</span>
+              <span>TARGETING 10m FIX... {accuracy ? `(±${Math.round(accuracy)}m • ${precisionPercent}%)` : ''}</span>
             </span>
           )}
           {qualityState === 'ERROR' && (
@@ -288,11 +297,25 @@ export const MyLocationMapCard: React.FC<{ className?: string }> = ({ className 
                   {latitude!.toFixed(6)}°, {longitude!.toFixed(6)}°
                 </span>
                 <span>&bull;</span>
-                <span className={accuracy && accuracy <= 50 ? 'text-emerald-400 font-bold' : 'text-slate-300'}>
-                  Accuracy: {accuracy ? Math.round(accuracy) : 0}m
+                <span className={accuracy && accuracy <= 10 ? 'text-emerald-300 font-bold' : accuracy && accuracy <= 50 ? 'text-emerald-400 font-semibold' : 'text-slate-300'}>
+                  Accuracy: &plusmn;{accuracy ? Math.round(accuracy * 10) / 10 : 0}m
                 </span>
                 <span>&bull;</span>
-                <span className="text-slate-500">Location updated just now</span>
+                <span className={precisionPercent >= 95 ? 'text-emerald-400 font-bold' : 'text-cyan-300'}>
+                  Precision: {precisionPercent}%
+                </span>
+                <span>&bull;</span>
+                <span className="text-slate-400 text-[10px]">
+                  Target: &le;10m
+                </span>
+                {speed !== null && speed > 0 && (
+                  <>
+                    <span>&bull;</span>
+                    <span className="text-cyan-400 font-mono">Speed: {(speed * 3.6).toFixed(1)} km/h</span>
+                  </>
+                )}
+                <span>&bull;</span>
+                <span className="text-slate-500">Live GPS tracking active</span>
               </>
             ) : (
               <span className="text-slate-500">Coordinates pending hardware lock</span>

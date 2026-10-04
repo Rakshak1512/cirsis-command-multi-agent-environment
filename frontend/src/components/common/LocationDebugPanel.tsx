@@ -14,6 +14,7 @@ export const LocationDebugPanel: React.FC = () => {
     longitude,
     accuracy,
     bestAccuracy,
+    precisionPercent,
     timestamp,
     address,
     qualityState,
@@ -122,12 +123,13 @@ Error: ${errorMessage || 'none'}`;
         </div>
 
         <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-800">
-          <div className="text-[10px] text-slate-500 uppercase">ACCURACY</div>
+          <div className="text-[10px] text-slate-500 uppercase">ACCURACY (TARGET 10m)</div>
           <div className={`font-bold text-xs mt-0.5 ${
+            accuracy !== null && accuracy <= 10 ? 'text-emerald-300 font-extrabold' :
             accuracy !== null && accuracy <= 50 ? 'text-emerald-400' :
             accuracy !== null && accuracy <= 150 ? 'text-cyan-300' : 'text-amber-400'
           }`}>
-            {accuracy !== null ? `${accuracy} meters` : 'Pending'}
+            {accuracy !== null ? `±${accuracy}m (${precisionPercent}%)` : 'Pending'}
           </div>
         </div>
 

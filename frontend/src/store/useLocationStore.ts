@@ -13,6 +13,9 @@ export interface LocationStoreState {
   longitude: number | null;
   accuracy: number | null;
   bestAccuracy: number | null;
+  precisionPercent: number;
+  heading: number | null;
+  speed: number | null;
   timestamp: number | null;
   address: string | null;
   city: string | null;
@@ -40,6 +43,7 @@ export interface LocationStoreState {
 const mapQualityToStatus = (q: LocationQualityState, perm: PermissionState): 'detecting' | 'improving' | 'detected' | 'denied' | 'unavailable' | 'error' => {
   if (perm === 'denied') return 'denied';
   switch (q) {
+    case 'PINPOINT':
     case 'ACCURATE':
     case 'APPROXIMATE':
       return 'detected';
@@ -60,6 +64,9 @@ export const useLocationStore = create<LocationStoreState>((set, get) => {
       longitude: state.longitude,
       accuracy: state.accuracy,
       bestAccuracy: state.bestAccuracy,
+      precisionPercent: state.precisionPercent,
+      heading: state.heading,
+      speed: state.speed,
       timestamp: state.timestamp,
       address: state.address,
       city: state.city,
@@ -81,6 +88,9 @@ export const useLocationStore = create<LocationStoreState>((set, get) => {
     longitude: initial.longitude,
     accuracy: initial.accuracy,
     bestAccuracy: initial.bestAccuracy,
+    precisionPercent: initial.precisionPercent,
+    heading: initial.heading,
+    speed: initial.speed,
     timestamp: initial.timestamp,
     address: initial.address,
     city: initial.city,
