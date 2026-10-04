@@ -69,6 +69,14 @@ class WebSocketClient {
 
   private getWebSocketUrl(): string {
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+    // When accessed through Cloudflare Tunnel, route WebSocket through the current tunnel host (Vite proxy)
+    if (typeof window !== 'undefined' && window.location.hostname.includes('trycloudflare.com')) {
+      const token = localStorage.getItem('crisis_token');
+      const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+      return `${wsProto}//${window.location.host}/ws/command${tokenParam}`;
+    }
+
     let backendHost = import.meta.env.VITE_BACKEND_HOST;
     if (backendHost && typeof backendHost === 'string' && backendHost.trim()) {
       // Strip any protocol prefixes or trailing paths if provided
@@ -86,10 +94,10 @@ class WebSocketClient {
     }
 
     if (!backendHost) {
-      if (typeof window !== 'undefined' && (window.location.hostname.includes('onrender.com') || (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'))) {
+      if (typeof window !== 'undefined' && window.location.hostname.includes('onrender.com')) {
         backendHost = 'cirsis-command-multi-agent-environment.onrender.com';
       } else {
-        backendHost = 'localhost:8000';
+        backendHost = '127.0.0.1:8000';
       }
     }
 

@@ -1,16 +1,25 @@
 const getApiBase = (): string => {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    // When accessed through Cloudflare Tunnel, use current origin so Vite proxies API calls without mixed-content or unreachable localhost issues
+    if (host.includes('trycloudflare.com')) {
+      return window.location.origin;
+    }
+  }
+
   const envUrl = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_URL;
   if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
     return envUrl.trim().replace(/\/+$/, '');
   }
-  // When running on Render or deployed domain, default to production backend URL rather than localhost
+
+  // When running on Render or deployed domain, default to production backend URL
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
-    if (host.includes('onrender.com') || (host !== 'localhost' && host !== '127.0.0.1')) {
+    if (host.includes('onrender.com')) {
       return 'https://cirsis-command-multi-agent-environment.onrender.com';
     }
   }
-  return 'http://localhost:8000';
+  return 'http://127.0.0.1:8000';
 };
 
 const API_BASE = getApiBase();

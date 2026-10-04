@@ -185,6 +185,87 @@ Includes instant deep-links to WhatsApp Web / WhatsApp Mobile with zero credenti
 
 ---
 
+## 🚀 Running Locally with Cloudflare Tunnel (Windows)
+
+Crisis Command is fully configured to run locally on Windows while being safely accessible to any external smartphone, tablet, or remote device via a secure **Cloudflare Tunnel**.
+
+### Prerequisites
+Ensure the following tools are installed on your Windows machine:
+1. **Node.js** (v18+) & **npm**: `node -v` and `npm -v`
+2. **Python** (3.10+): `python --version`
+3. **Cloudflare Tunnel CLI** (`cloudflared`):
+   ```powershell
+   winget install Cloudflare.cloudflared
+   ```
+   *(Or download the binary from [Cloudflare Releases](https://github.com/cloudflare/cloudflared/releases/latest) and place it on your system PATH).*
+
+---
+
+### Starting the System (One Command)
+
+Simply double-click or run:
+```cmd
+start-cloudflare.bat
+```
+
+This automated script will:
+1. Validate required tools (`node`, `npm`, `python`, `cloudflared`).
+2. Launch the **FastAPI Backend** on `http://127.0.0.1:8000` in a dedicated terminal.
+3. Automatically perform a health check on `http://127.0.0.1:8000/health`.
+4. Launch the **React + Vite Frontend** on `http://127.0.0.1:5173` (listening on `0.0.0.0`) in a dedicated terminal.
+5. Automatically verify the frontend is responding on `http://127.0.0.1:5173`.
+6. Open your local browser to `http://127.0.0.1:5173`.
+7. Launch **Cloudflare Tunnel** (`cloudflared tunnel --url http://127.0.0.1:5173`).
+8. Display the public tunnel URL:
+
+```text
+========================================
+ CRISIS COMMAND STARTED
+========================================
+ Backend:
+ http://127.0.0.1:8000
+
+ Frontend:
+ http://127.0.0.1:5173
+
+ Cloudflare:
+ https://xxxxx.trycloudflare.com
+
+ Open the Cloudflare URL on another device.
+========================================
+```
+
+Open the `https://xxxxx.trycloudflare.com` URL on your phone or any external device to experience the complete Crisis Command suite with live dashboards, OpenStreetMap, incident reporting, and real-time WebSockets.
+
+---
+
+### Stopping the System
+
+To shut down all running services, simply double-click or run:
+```cmd
+stop-cloudflare.bat
+```
+This terminates the `cloudflared` tunnel, FastAPI backend, and Vite frontend processes cleanly.
+
+---
+
+### Demo Accounts & Login Credentials
+
+All dashboards, personas, and roles are available immediately with pre-configured credentials:
+
+| Role | Name | Email | Password | Clearance / Portal |
+| :--- | :--- | :--- | :--- | :--- |
+| **Commander / Admin** | Chief Marcus Vance | `commander@crisiscommand.demo` | `Commander@123` | `/commander/dashboard` (Full EOC Tactical) |
+| **Citizen** | Alex Mercer | `citizen@crisiscommand.demo` | `Citizen@123` | `/citizen/dashboard` (GPS Reporting) |
+| **Fire Team Responder** | Capt. Elena Rostova | `fireteam@crisiscommand.demo` | `FireTeam@123` | `/fire-team/dashboard` (Station Alpha Cockpit) |
+| **Hospital / Medical** | Dr. Sarah Lin | `hospital@crisiscommand.demo` | `Hospital@123` | `/hospital/dashboard` (Trauma Intake Center) |
+| **Dispatcher** | Metro Central CAD | `dispatcher@crisiscommand.demo` | `Dispatcher@123` | `/commander/dashboard` (Dispatch Console) |
+| **Administrator** | Root Administrator | `admin@crisiscommand.demo` | `Admin@123` | `/commander/dashboard` (System Admin) |
+
+*Alternative domain aliases (`@crisiscommand.org` with password `Password123!`) are also pre-seeded and active in the system.*
+
+---
+
 ## 🔒 Security & Environment Variables
 
 Create `.env` inside `backend/`:
