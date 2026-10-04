@@ -25,6 +25,7 @@ class Database:
         self.assignments: Dict[str, Assignment] = {}
         self.notifications: List[Notification] = []
         self.audit_logs: List[AuditLog] = []
+        self.pending_registrations: Dict[str, Dict[str, Any]] = {}
         self._firestore_db = None
         self.init_firestore()
         self.seed_demo_data()
@@ -43,23 +44,81 @@ class Database:
         if not self._firestore_db:
             return
         try:
+            # Sync users
             docs = self._firestore_db.collection("users").stream()
+            u_count = 0
             for doc in docs:
                 u = doc.to_dict()
                 email = (u.get("email") or doc.id).strip().lower()
                 if email:
                     self.users[email] = u
+                    u_count += 1
+            if u_count > 0:
+                logger.info(f"Loaded {u_count} user accounts from Firestore.")
+
+            # Sync resources
+            r_docs = self._firestore_db.collection("resources").stream()
+            r_count = 0
+            for doc in r_docs:
+                r_data = doc.to_dict()
+                try:
+                    self.resources[doc.id] = Resource(**r_data)
+                    r_count += 1
+                except Exception:
+                    pass
+            if r_count > 0:
+                logger.info(f"Loaded {r_count} resources from Firestore.")
+
+            # Sync incidents
+            inc_docs = self._firestore_db.collection("incidents").stream()
+            inc_count = 0
+            for doc in inc_docs:
+                inc_data = doc.to_dict()
+                try:
+                    self.incidents[doc.id] = Incident(**inc_data)
+                    inc_count += 1
+                except Exception:
+                    pass
+            if inc_count > 0:
+                logger.info(f"Loaded {inc_count} incidents from Firestore.")
         except Exception as e:
-            logger.warning(f"Firestore users sync skipped: {e}")
+            logger.warning(f"Firestore sync skipped: {e}")
 
     def save_user(self, user_data: Dict[str, Any]):
         email = user_data["email"].strip().lower()
+        if "status" not in user_data:
+            user_data["status"] = "ACTIVE"
         self.users[email] = user_data
         if self._firestore_db:
             try:
                 self._firestore_db.collection("users").document(email).set(user_data, merge=True)
+                logger.info(f"Persisted user {email} ({user_data.get('role')}) to Firestore.")
             except Exception as e:
                 logger.warning(f"Failed to persist user {email} to Firestore: {e}")
+
+    def save_pending_registration(self, email: str, data: Dict[str, Any]):
+        clean = email.strip().lower()
+        self.pending_registrations[clean] = data
+        if self._firestore_db:
+            try:
+                self._firestore_db.collection("pending_registrations").document(clean).set(data)
+            except Exception as e:
+                logger.warning(f"Failed to persist pending registration for {clean}: {e}")
+
+    def pop_pending_registration(self, email: str) -> Optional[Dict[str, Any]]:
+        clean = email.strip().lower()
+        data = self.pending_registrations.pop(clean, None)
+        if self._firestore_db:
+            try:
+                doc_ref = self._firestore_db.collection("pending_registrations").document(clean)
+                doc = doc_ref.get()
+                if doc.exists:
+                    if not data:
+                        data = doc.to_dict()
+                    doc_ref.delete()
+            except Exception as e:
+                logger.warning(f"Failed to pop pending registration from Firestore for {clean}: {e}")
+        return data
 
     def get_user(self, email: str) -> Optional[Dict[str, Any]]:
         email_clean = email.strip().lower()

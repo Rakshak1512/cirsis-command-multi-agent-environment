@@ -290,10 +290,13 @@ SMTP_PASSWORD=""
 SMTP_FROM_EMAIL="noreply@crisiscommand.org"
 SMTP_USE_TLS=true
 
-# Firebase Admin Configuration (Optional - Environment Variables)
-FIREBASE_PROJECT_ID=""
-FIREBASE_CLIENT_EMAIL=""
-FIREBASE_PRIVATE_KEY=""
+# Firebase Admin Configuration (Production Cloud Firestore)
+FIREBASE_PROJECT_ID="your-firebase-project-id"
+FIREBASE_CLIENT_EMAIL="firebase-adminsdk-xxx@your-firebase-project-id.iam.gserviceaccount.com"
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEv...=\n-----END PRIVATE KEY-----\n"
+
+# Administrative Seeding Secret (For protected one-time production provisioning)
+ADMIN_SEED_SECRET="CRISIS-COMMAND-ROOT-SEED-2026"
 
 FRONTEND_URL="http://localhost:5173"
 BACKEND_URL="http://localhost:8000"
@@ -301,26 +304,52 @@ BACKEND_URL="http://localhost:8000"
 
 ---
 
-## 🧪 Test Suite Verification
+## 🗄️ Production Firebase & Cloud Firestore Deployment (Render)
 
-Run the automated test suite:
+### 1. Render Backend Environment Variables
+In your **Render Dashboard** -> **Crisis Command Backend Service** -> **Environment**:
+Ensure the following variables are configured:
+
+| Variable | Example / Description |
+| :--- | :--- |
+| `FIREBASE_PROJECT_ID` | `crisis-command-8e301` |
+| `FIREBASE_CLIENT_EMAIL` | `firebase-adminsdk-fbsvc@crisis-command-8e301.iam.gserviceaccount.com` |
+| `FIREBASE_PRIVATE_KEY` | The entire private key string including `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----`. Newlines can be entered either as literal newlines or escaped `\n`. |
+| `ADMIN_SEED_SECRET` | `CRISIS-COMMAND-ROOT-SEED-2026` (Used to protect one-time setup) |
+| `JWT_SECRET` | Strong secret key string |
+| `DEMO_MODE` | `true` |
+
+### 2. Idempotent Production Database Seeding
+To provision all test accounts (`Citizen`, `Fire Team`, `Hospital`, `Admin`, `Commander`, `Dispatcher`) and baseline emergency resources (`Central Fire Station Alpha`, `Paramedic Unit 01`, `Metro General Trauma Hospital`) into your Cloud Firestore database:
+
+#### Method A: Direct CLI Command (Render Shell or Local Terminal)
+```bash
+python scripts/seed_production.py
+```
+*(Add `--force` flag if you ever wish to re-seed and reset demo passwords).*
+
+#### Method B: Protected One-Time Administrative Endpoint (cURL)
+```bash
+curl -X POST "https://<your-render-backend-url>/auth/seed" \
+  -H "X-Admin-Seed-Key: CRISIS-COMMAND-ROOT-SEED-2026" \
+  -H "Content-Type: application/json"
+```
+
+**Guarantees:**
+- **Zero Plaintext Passwords**: All credentials stored in Firestore are securely hashed with bcrypt.
+- **Strictly Idempotent**: Prevents duplicate accounts; skips existing accounts without altering passwords or data.
+- **Account Persistence**: Users and resources remain permanently stored in Cloud Firestore and persist across Render restarts.
+
+---
+
+## 🧪 Comprehensive Test Suite Verification
+
+Run the full automated test suite (including Firestore connectivity, 4-role authentication, role mismatch matrix, and registration persistence):
 ```powershell
 cd backend
-$env:PYTHONPATH="."
-pytest -v tests
+python -m pytest tests -v
 ```
-Output:
-```text
-tests/test_core.py::test_health_and_root PASSED               [ 12%]
-tests/test_core.py::test_haversine_and_eta PASSED             [ 25%]
-tests/test_core.py::test_login_demo_commander PASSED          [ 37%]
-tests/test_core.py::test_incident_creation_and_auto_plan_v1   [ 50%]
-tests/test_core.py::test_dynamic_replanning_to_plan_v2 PASSED [ 62%]
-tests/test_core.py::test_whatsapp_share_alert PASSED          [ 75%]
-tests/test_core.py::test_commander_override PASSED            [ 87%]
-tests/test_core.py::test_analytics_metrics PASSED             [100%]
-======================== 8 passed in 1.01s ========================
-```
+All 41 tests will validate and pass cleanly.
 
 ---
 

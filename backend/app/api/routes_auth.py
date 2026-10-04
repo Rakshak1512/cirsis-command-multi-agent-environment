@@ -1,6 +1,8 @@
+import os
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, status
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends, Header, status
 from app.models.schemas import (
     UserRegisterRequest, OTPVerifyRequest, UserLoginRequest,
     ForgotPasswordRequest, ResetPasswordRequest, TokenResponse, UserResponse, UserRole,
@@ -13,16 +15,17 @@ from app.core.security import (
     decode_access_token, generate_otp, verify_otp
 )
 from app.services.smtp_service import send_otp_email, send_password_reset_email
+from app.services.firebase_service import sync_auth_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# Pending registrations awaiting OTP verification
+# In-memory fast cache for pending registrations
 _pending_registrations = {}
 
 @router.post("/register")
 def register(req: UserRegisterRequest):
     email = req.email.strip().lower()
-    if email in db.users:
+    if db.get_user(email):
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
 
     # Restrict internal role creation via public registration
@@ -48,13 +51,14 @@ def register(req: UserRegisterRequest):
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    # Temporarily store pending registration details
-    _pending_registrations[email] = {
+    # Construct pending registration record (with bcrypt hashed password — NEVER plaintext!)
+    pending_record = {
         "id": f"usr_{str(uuid.uuid4())[:8]}",
         "email": email,
         "full_name": req.full_name,
         "role": req.role.value,
         "password_hash": get_password_hash(req.password),
+        "status": "PENDING_VERIFICATION",
         "created_at": datetime.utcnow().isoformat() + "Z",
         "metadata": {
             "station_name": req.station_name,
@@ -76,13 +80,16 @@ def register(req: UserRegisterRequest):
         }
     }
 
+    _pending_registrations[email] = pending_record
+    db.save_pending_registration(email, pending_record)
+
     response_data = {
         "status": "success",
         "message": f"Verification 6-digit OTP dispatched to {email}. Please verify to activate your {req.role.value} account.",
         "email": email,
         "role": req.role.value
     }
-    if settings.DEMO_MODE:
+    if settings.DEMO_MODE or settings.ENV == "development":
         response_data["otp"] = otp
     return response_data
 
@@ -97,7 +104,7 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
     if not valid:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
 
-    user_data = _pending_registrations.pop(email, None)
+    user_data = _pending_registrations.pop(email, None) or db.pop_pending_registration(email)
     if not user_data:
         # Check if user already exists (e.g. forgot password flow or re-verification)
         user_data = db.get_user(email)
@@ -105,9 +112,20 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
             raise HTTPException(status_code=404, detail="No registration found for this email.")
     else:
         user_data["is_verified"] = True
+        user_data["status"] = "ACTIVE"
         db.save_user(user_data)
 
-        # Dynamically provision emergency asset for Fire Team or Hospital accounts
+        # Optional Firebase Auth non-blocking synchronization
+        try:
+            sync_auth_user(
+                email=email,
+                display_name=user_data.get("full_name"),
+                uid=user_data.get("id")
+            )
+        except Exception:
+            pass
+
+        # Dynamically provision emergency asset in Firestore for Fire Team or Hospital accounts
         meta = user_data.get("metadata") or {}
         now_str = datetime.utcnow().isoformat() + "Z"
         if user_data["role"] == "FIRE_TEAM":
@@ -116,7 +134,9 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
             meta["station_id"] = res_id
             meta["station_name"] = team_name
             user_data["metadata"] = meta
-            db.resources[res_id] = Resource(
+            db.save_user(user_data)
+
+            res_obj = Resource(
                 id=res_id,
                 name=team_name,
                 type=ResourceType.FIRE_TEAM,
@@ -131,13 +151,17 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
                 specialization=["structural", "rescue"],
                 updated_at=now_str
             )
+            db.save_resource(res_obj)
+
         elif user_data["role"] == "HOSPITAL":
             res_id = f"RES-HOSP-{uuid.uuid4().hex[:4].upper()}"
             hosp_name = meta.get("hospital_name") or user_data["full_name"]
             meta["hospital_id"] = res_id
             meta["hospital_name"] = hosp_name
             user_data["metadata"] = meta
-            db.resources[res_id] = Resource(
+            db.save_user(user_data)
+
+            res_obj = Resource(
                 id=res_id,
                 name=hosp_name,
                 type=ResourceType.HOSPITAL,
@@ -152,6 +176,7 @@ def verify_otp_endpoint(req: OTPVerifyRequest):
                 specialization=meta.get("specializations") or ["Level-1 Trauma", "Burn Unit"],
                 updated_at=now_str
             )
+            db.save_resource(res_obj)
 
     # Generate JWT
     token = create_access_token({
@@ -180,7 +205,7 @@ def login(req: UserLoginRequest):
     if not user_data:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    if not verify_password(req.password, user_data["password_hash"]):
+    if not verify_password(req.password, user_data.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     if user_data.get("is_verified") is False:
@@ -192,19 +217,22 @@ def login(req: UserLoginRequest):
         def normalize_role(r_str: str) -> str:
             return r_str.strip().lower().replace("-", "_").replace(" ", "_")
 
-        role_display_names = {
-            "citizen": "Citizen",
-            "fire_team": "Fire Team",
-            "hospital": "Hospital",
-            "admin": "Admin",
-            "commander": "Commander",
-            "dispatcher": "Dispatcher"
-        }
-
         norm_requested = normalize_role(requested_role)
         norm_actual = normalize_role(user_data["role"])
 
-        if norm_requested != norm_actual:
+        # Allow ADMIN portal access for COMMANDER / ADMIN roles
+        admin_family = {"admin", "commander"}
+        is_match = (norm_requested == norm_actual) or (norm_requested == "admin" and norm_actual in admin_family)
+
+        if not is_match:
+            role_display_names = {
+                "citizen": "Citizen",
+                "fire_team": "Fire Team",
+                "hospital": "Hospital",
+                "admin": "Admin",
+                "commander": "Commander",
+                "dispatcher": "Dispatcher"
+            }
             actual_friendly = role_display_names.get(norm_actual, norm_actual.replace("_", " ").title())
             raise HTTPException(
                 status_code=403,
@@ -230,10 +258,30 @@ def login(req: UserLoginRequest):
 
     return TokenResponse(access_token=token, user=user_resp)
 
+@router.post("/seed")
+def trigger_seed(
+    x_admin_seed_key: Optional[str] = Header(None, alias="X-Admin-Seed-Key"),
+    force: bool = False
+):
+    """
+    Protected administrative endpoint to seed test accounts into production Firestore.
+    Requires header: X-Admin-Seed-Key matching configured administrative secret.
+    """
+    expected_secret = os.getenv("ADMIN_SEED_SECRET", getattr(settings, "ADMIN_SEED_SECRET", "CRISIS-COMMAND-ROOT-SEED-2026"))
+    if not x_admin_seed_key or x_admin_seed_key.strip() != expected_secret.strip():
+        raise HTTPException(
+            status_code=403,
+            detail="Unauthorized administrative action. Valid X-Admin-Seed-Key required."
+        )
+
+    from app.services.seed_service import seed_test_accounts
+    summary = seed_test_accounts(force_update=force)
+    return summary
+
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordRequest):
     email = req.email.strip().lower()
-    if email not in db.users:
+    if not db.get_user(email):
         # Avoid user enumeration while returning clean feedback
         return {"status": "success", "message": "If this email is registered, a password reset code has been sent."}
 
@@ -266,7 +314,8 @@ def reset_password(req: ResetPasswordRequest):
 
 @router.get("/users")
 def list_users():
-    """Lists registered users for Admin Directorate overview and management."""
+    """Lists registered users from persistent database."""
+    db.sync_from_firestore()
     users_list = []
     for email, u in db.users.items():
         users_list.append({
@@ -283,7 +332,7 @@ def list_users():
 
 @router.patch("/users/{email}/status")
 def update_user_status(email: str, status_data: dict):
-    """Updates user status or verification state."""
+    """Updates user status or verification state in Firestore."""
     target_email = email.strip().lower()
     user = db.get_user(target_email)
     if not user:
