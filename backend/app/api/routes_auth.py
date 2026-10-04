@@ -14,7 +14,7 @@ from app.core.security import (
     get_password_hash, verify_password, create_access_token,
     decode_access_token, generate_otp, verify_otp
 )
-from app.services.smtp_service import send_otp_email, send_password_reset_email
+from app.services.smtp_service import send_otp_email, send_password_reset_email, get_last_delivery_error
 from app.services.firebase_service import sync_auth_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -52,9 +52,10 @@ def register(req: UserRegisterRequest):
 
     sent = send_otp_email(email, otp, purpose=f"Account Verification ({req.role.value})")
     if not sent:
+        err_msg = get_last_delivery_error() or "Failed to dispatch verification email. Please verify that your email address is correct and that the email service is available."
         raise HTTPException(
             status_code=502,
-            detail="Failed to dispatch verification email. Please verify that your email address is correct and that the email service is available."
+            detail=err_msg
         )
 
     # Construct pending registration record (with bcrypt hashed password — NEVER plaintext!)
@@ -297,9 +298,10 @@ def forgot_password(req: ForgotPasswordRequest):
 
     sent = send_password_reset_email(email, otp)
     if not sent:
+        err_msg = get_last_delivery_error() or "Failed to dispatch password reset email. Please verify SMTP service or try again later."
         raise HTTPException(
             status_code=502,
-            detail="Failed to dispatch password reset email. Please verify SMTP service or try again later."
+            detail=err_msg
         )
 
     return {"status": "success", "message": f"Password reset OTP sent to {email}."}

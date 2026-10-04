@@ -41,11 +41,104 @@ def get_smtp_config() -> Dict[str, Any]:
         "use_tls": use_tls,
     }
 
+import json
+import urllib.request
+import urllib.error
+
+_last_delivery_error: Optional[str] = None
+
+def get_last_delivery_error() -> Optional[str]:
+    return _last_delivery_error
+
+def send_via_resend(to_email: str, subject: str, html_content: str) -> Tuple[bool, str]:
+    """Sends email via Resend HTTPS API (bypasses Render outbound SMTP port blocking)."""
+    api_key = str(os.getenv("RESEND_API_KEY") or "").strip().strip("'\"")
+    if not api_key:
+        return False, "RESEND_API_KEY not configured"
+    
+    from_email = str(os.getenv("RESEND_FROM_EMAIL") or "Crisis Command <onboarding@resend.dev>").strip().strip("'\"")
+    payload = json.dumps({
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_content
+    }).encode("utf-8")
+    
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "CrisisCommand/2026.1"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if resp.status in (200, 201):
+                logger.info(f"Verification email dispatched via Resend HTTPS API to {to_email}")
+                return True, "Delivered via Resend HTTPS API"
+            return False, f"Resend API status {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        logger.error(f"Resend API error {e.code}: {body}")
+        return False, f"Resend API rejected request: {body}"
+    except Exception as e:
+        logger.error(f"Resend API connection error: {type(e).__name__}")
+        return False, f"Resend connection failed: {type(e).__name__}"
+
+def send_via_brevo(to_email: str, subject: str, html_content: str) -> Tuple[bool, str]:
+    """Sends email via Brevo HTTPS API (bypasses Render outbound SMTP port blocking)."""
+    api_key = str(os.getenv("BREVO_API_KEY") or "").strip().strip("'\"")
+    if not api_key:
+        return False, "BREVO_API_KEY not configured"
+    
+    from_email = str(os.getenv("BREVO_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL") or "smart.event.system2026@gmail.com").strip().strip("'\"")
+    from_name = str(os.getenv("SMTP_FROM_NAME") or "Crisis Command").strip().strip("'\"")
+    
+    payload = json.dumps({
+        "sender": {"name": from_name, "email": from_email},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html_content
+    }).encode("utf-8")
+    
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=payload,
+        headers={
+            "api-key": api_key,
+            "Content-Type": "application/json",
+            "User-Agent": "CrisisCommand/2026.1"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if resp.status in (200, 201):
+                logger.info(f"Verification email dispatched via Brevo HTTPS API to {to_email}")
+                return True, "Delivered via Brevo HTTPS API"
+            return False, f"Brevo API status {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        logger.error(f"Brevo API error {e.code}: {body}")
+        return False, f"Brevo API error: {body}"
+    except Exception as e:
+        logger.error(f"Brevo API connection error: {type(e).__name__}")
+        return False, f"Brevo connection failed: {type(e).__name__}"
+
 def verify_smtp_connection() -> Tuple[bool, str]:
-    """Performs a lightweight probe to verify SMTP provider connectivity and credentials."""
+    """Performs a lightweight probe to verify email provider connectivity."""
+    # Check Resend or Brevo API first
+    if os.getenv("RESEND_API_KEY"):
+        return True, "Resend HTTPS Email API configured (Render-safe)"
+    if os.getenv("BREVO_API_KEY"):
+        return True, "Brevo HTTPS Email API configured (Render-safe)"
+        
     cfg = get_smtp_config()
     if not cfg["username"] or not cfg["password"]:
-        return False, "SMTP credentials unconfigured (SMTP_USERNAME or SMTP_PASSWORD missing)"
+        return False, "SMTP credentials unconfigured (SMTP_USERNAME or SMTP_PASSWORD missing in environment)"
     try:
         with smtplib.SMTP(cfg["host"], cfg["port"], timeout=10) as server:
             server.ehlo()
@@ -58,25 +151,42 @@ def verify_smtp_connection() -> Tuple[bool, str]:
         return False, f"SMTP authentication rejected (code {e.smtp_code})"
     except smtplib.SMTPException as e:
         return False, f"SMTP error: {type(e).__name__}"
+    except OSError as e:
+        return False, "Outbound SMTP blocked by host (Render Free Tier blocks ports 25, 465, and 587). Please configure RESEND_API_KEY."
     except Exception as e:
         return False, f"Connection failure: {type(e).__name__}"
 
 def send_smtp_email(to_email: str, subject: str, html_content: str, text_content: Optional[str] = None) -> bool:
     """
-    Sends an email via SMTP.
-    Returns True if successfully accepted by the SMTP provider.
-    Returns False on delivery failures or when credentials are missing.
-    Never logs credentials, passwords, or OTP secrets.
+    Sends an email via HTTPS API (Resend/Brevo) or standard SMTP.
+    Returns True on success, False on failure. Never leaks credentials.
     """
-    cfg = get_smtp_config()
+    global _last_delivery_error
+    _last_delivery_error = None
     recipient_domain = to_email.split("@")[-1] if "@" in to_email else "unknown"
 
+    # 1. Try Resend HTTPS API if configured (Render-safe)
+    if os.getenv("RESEND_API_KEY"):
+        ok, msg = send_via_resend(to_email, subject, html_content)
+        if ok:
+            return True
+        logger.warning(f"Resend dispatch failed ({msg}), attempting fallback providers...")
+
+    # 2. Try Brevo HTTPS API if configured (Render-safe)
+    if os.getenv("BREVO_API_KEY"):
+        ok, msg = send_via_brevo(to_email, subject, html_content)
+        if ok:
+            return True
+        logger.warning(f"Brevo dispatch failed ({msg}), attempting fallback providers...")
+
+    # 3. Standard SMTP fallback
+    cfg = get_smtp_config()
     if not cfg["username"] or not cfg["password"]:
-        logger.error(f"SMTP delivery failed for {recipient_domain}: SMTP_USERNAME or SMTP_PASSWORD is not configured.")
-        # If in local demo mode with explicit offline flag, record in mock outbox
+        err = "Email service unconfigured: SMTP credentials (or RESEND_API_KEY) are missing in environment."
+        _last_delivery_error = err
+        logger.error(f"Email delivery failed for {recipient_domain}: {err}")
         if settings.DEMO_MODE and settings.ENV == "development":
             _mock_email_outbox.append({"to": to_email, "subject": subject, "content": html_content})
-            logger.info(f"[LOCAL TEST MODE] Recorded email dispatch in mock outbox for domain: {recipient_domain}")
             return True
         return False
 
@@ -90,28 +200,44 @@ def send_smtp_email(to_email: str, subject: str, html_content: str, text_content
             msg.attach(MIMEText(text_content, "plain"))
         msg.attach(MIMEText(html_content, "html"))
 
-        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=12) as server:
-            server.ehlo()
-            if cfg["use_tls"]:
-                server.starttls()
+        if cfg["port"] == 465:
+            with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=12) as server:
+                server.login(cfg["username"], cfg["password"])
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(cfg["host"], cfg["port"], timeout=12) as server:
                 server.ehlo()
-            server.login(cfg["username"], cfg["password"])
-            server.send_message(msg)
+                if cfg["use_tls"]:
+                    server.starttls()
+                    server.ehlo()
+                server.login(cfg["username"], cfg["password"])
+                server.send_message(msg)
 
         logger.info(f"Verification email successfully dispatched to domain: {recipient_domain}")
         return True
 
     except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP authentication failure (code {e.smtp_code}) while delivering to {recipient_domain}")
+        _last_delivery_error = f"SMTP authentication rejected by provider (code {e.smtp_code}). Please verify your email password/app password."
+        logger.error(f"SMTP auth failure ({e.smtp_code}) for domain {recipient_domain}")
         return False
     except smtplib.SMTPRecipientsRefused:
+        _last_delivery_error = "The recipient email address was refused by the mail server."
         logger.error(f"SMTP recipient refused by provider for domain: {recipient_domain}")
         return False
     except smtplib.SMTPException as e:
-        logger.error(f"SMTP protocol error ({type(e).__name__}) while delivering to {recipient_domain}")
+        _last_delivery_error = f"SMTP protocol error ({type(e).__name__})."
+        logger.error(f"SMTP protocol error ({type(e).__name__}) for domain {recipient_domain}")
+        return False
+    except OSError as e:
+        _last_delivery_error = (
+            "Outbound SMTP connection blocked by Render Free Tier firewall (ports 25, 465, and 587 are blocked). "
+            "To send emails on Render, add a free RESEND_API_KEY from resend.com in Render environment variables."
+        )
+        logger.error(f"Render SMTP port blocked (OSError) for {recipient_domain}: {_last_delivery_error}")
         return False
     except Exception as e:
-        logger.error(f"Unexpected connection error ({type(e).__name__}) delivering email to {recipient_domain}")
+        _last_delivery_error = f"Unexpected email connection error ({type(e).__name__})."
+        logger.error(f"Unexpected connection error ({type(e).__name__}) for domain {recipient_domain}")
         return False
 
 _latest_test_otps: Dict[str, str] = {}
